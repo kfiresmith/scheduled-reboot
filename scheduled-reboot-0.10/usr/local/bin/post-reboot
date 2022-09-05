@@ -1,5 +1,7 @@
 #!/bin/bash
 #
+# Run any scripts present in /etc/scheduled-reboot/post-reboot/
+#
 # 2022-09-05 - Kodiak Firesmith <firesmith@protonmail.com>
 
 sysconfig_file=/etc/default/scheduled-reboot

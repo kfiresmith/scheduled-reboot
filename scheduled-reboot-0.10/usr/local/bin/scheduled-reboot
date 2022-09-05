@@ -12,22 +12,13 @@
 #   - Freeform shell commands encapsulated within a bash function, to be executed prior to
 #     update/upgrade
 #
-# Ansible variables:
-#   - reboot_mail_recipients (string): Space-separated list of email addresses to send exception
-#       emails to if we run into any problems with reboot
-#   - upgrade_at_shutdown (boolean, default false): Run apt update && apt upgrade prior to reboot
-#   - pre_reboot_tasks (list): A list of free-form shell commands to run before reboot, and
-#       before any pre-reboot package upgrades
-#   - reboot_schedule (string):  Reboot schedule.  Crontab format.
-#       Example: reboot_schedule: '50 5 * * *'
 #
 # To-do:
 #   - Perform file type analysis on each script to be run in the script dirs, and only run
 #       executable scripts (bash, python, etc)
 #   - Add support for RHEL variants
-#   - Add option for emailing on successful reboot run (before the actual reboot, though)
 
-# 2022-08-02 - Kodiak Firesmith <kfiresmith@whoi.edu>
+# 2022-09-05 - Kodiak Firesmith <firesmith@protonmail.com>
 
 
 sysconfig_file=/etc/default/scheduled-reboot
