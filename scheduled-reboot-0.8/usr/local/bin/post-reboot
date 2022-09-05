@@ -1,0 +1,29 @@
+#!/bin/bash
+#
+# 2022-09-05 - Kodiak Firesmith <firesmith@protonmail.com>
+
+sysconfig_file=/etc/default/scheduled-reboot
+test -f $sysconfig_file && source $sysconfig_file
+
+
+# This function will fire off any scripts present in the 'post-reboot' folder.  Service owners can write
+#   scripts that prepare their services after the scheduled (optional) package upgrade
+#   and reboot.
+function post_reboot_scripts {
+  for script in $(ls -1 $scripts_dir/post-reboot/); do
+    logger -t scheduled-reboot "Executing script: $script"
+    bash $scripts_dir/post-reboot/$script 1>>/tmp/post-reboot-script.out 2>>/tmp/post-reboot-script.err
+    if [ $? -eq 0 ]; then
+      logger -t scheduled-reboot "Script: $script completed successfully"
+    else
+      error_output="$(tail -1 /tmp/post-reboot-script.err)"
+      logger -t scheduled-reboot "Problem with post-reboot script $script. Bailing on reboot. Notifying contacts"
+      logger -t scheduled-reboot "Error output: $error_output"
+      echo "post-reboot script $script failed and needs to be investigated. Error: $error_output" | mail -s "ALERT: scheduled-reboot failed on $HOSTNAME" $mailto
+    fi
+  done
+}
+
+logger -t scheduled-reboot "Kicking off post-reboot tasks if any exist"
+
+post_reboot_scripts

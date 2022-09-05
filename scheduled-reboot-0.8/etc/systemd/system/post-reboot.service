@@ -1,0 +1,10 @@
+[Unit]
+Description=Run any post-reboot scripts present in /etc/scheduled-reboot/post-reboot
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/bash /usr/local/bin/post-reboot
+
+[Install]
+WantedBy=multi-user.target

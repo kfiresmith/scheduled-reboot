@@ -1,0 +1,158 @@
+#!/bin/bash
+# 
+# Perform scheduled reboots on Linux servers, with optional pre-reboot tasks.
+#
+# Safety: 
+#   - Examines the lock file for dpkg, to ensure that package installs are not underway
+#     before executing reboot
+#   - If package updates fail, email the owner and cancel the reboot
+#
+# Optional tasks:
+#   - Perform package update/upgrade prior to reboot
+#   - Freeform shell commands encapsulated within a bash function, to be executed prior to
+#     update/upgrade
+#
+# Ansible variables:
+#   - reboot_mail_recipients (string): Space-separated list of email addresses to send exception
+#       emails to if we run into any problems with reboot
+#   - upgrade_at_shutdown (boolean, default false): Run apt update && apt upgrade prior to reboot
+#   - pre_reboot_tasks (list): A list of free-form shell commands to run before reboot, and
+#       before any pre-reboot package upgrades
+#   - reboot_schedule (string):  Reboot schedule.  Crontab format.
+#       Example: reboot_schedule: '50 5 * * *'
+#
+# To-do:
+#   - Perform file type analysis on each script to be run in the script dirs, and only run
+#       executable scripts (bash, python, etc)
+#   - Add support for RHEL variants
+#   - Add option for emailing on successful reboot run (before the actual reboot, though)
+
+# 2022-08-02 - Kodiak Firesmith <kfiresmith@whoi.edu>
+
+
+sysconfig_file=/etc/default/scheduled-reboot
+test -f $sysconfig_file && source $sysconfig_file
+
+
+# Function takes body,  subject, and fatal as parameters.
+# Fire off an email, and optionally exit the script.
+#
+function bail_and_mail () {
+  echo "$1" | mail -s "$2" $mailto
+  if [ "$3" == "fatal" ]; then
+    exit 2
+  fi 
+}
+
+
+# Provide a local toggle on systems to allow administrators to temporarily disable automated reboots.
+if [ "$scheduled_reboots_disabled" = true ]; then
+  logger -t scheduled-reboot "Scheduled reboot is inhibited due to being locally disabled"
+  if [ "$email_when_disabled" = true ]; then
+    bail_and_mail "Scheduled reboots have been locally disabled on $HOSTNAME" "Scheduled reboot skipped on $HOSTNAME" not_fatal
+  fi
+  exit 0
+fi
+
+
+# This function will fire off any scripts present in the 'on-pre-reboot-failure' folder.
+#   Service owners can write scripts that attempt to bring services back online that may have already
+#   been stopped as part of a pre-reboot task or script.
+function on_pre_reboot_failure {
+  logger -t scheduled-reboot "Running any failure recovery scripts present in $scripts_dir/on-pre-reboot-failure if present"
+  for script in $(ls -1 $scripts_dir/on-pre-reboot-failure/); do
+    logger -t scheduled-reboot "Executing failure recovery script: $script"
+    bash $scripts_dir/on-pre-reboot-failure/$script
+    if [ $? -eq 0 ]; then
+      logger -t scheduled-reboot "Failure recovery script: $script finished successfully"
+    else
+      problem_state="Pre-reboot script problem: $script exited with a non-zero exit code"    
+      logger -t scheduled-reboot "$problem_state"
+      bail_and_mail "$problem_state" "$alert_subject" not_fatal
+    fi
+  done
+  logger -t scheduled-reboot "Failure recovery scripts phase completed. Ending scheduled-reboot process"
+  exit 2
+}
+
+
+# This function will fire off any scripts present in the 'pre-reboot' folder.  Service owners can write
+#   scripts that gracefully stop or quiesce their services prior to the scheduled (optional) package upgrade
+#   and reboot.
+function pre_reboot_scripts {
+  logger -t scheduled-reboot "Kicking off pre-reboot scripts if any exist"
+  date 1>>$logs_dir/pre-reboot-scripts.out | tee -a $logs_dir/pre-reboot-scripts.err
+  for script in $(ls -1 $scripts_dir/pre-reboot/); do
+    logger -t scheduled-reboot "Executing script: $script"
+    bash $scripts_dir/pre-reboot/$script 1>>$logs_dir/pre-reboot-scripts.out 2>>$logs_dir/pre-reboot-scripts.err
+    if [ $? -eq 0 ]; then
+      logger -t scheduled-reboot "Script: $script completed successfully"
+    else
+      error_output="$(tail -1 $logs_dir/pre-reboot-scripts.err)"
+      logger -t scheduled-reboot "Problem with pre-reboot script $script. Bailing on reboot. Notifying contacts"
+      logger -t scheduled-reboot "Error output: $error_output"
+      bail_and_mail "pre-reboot script $script failed and needs to be investigated prior to rebooting. Error: $error_output" "$alert_mailsubject" not_fatal
+      on_pre_reboot_failure
+    fi
+  done
+}
+
+# Upgrades should be a function called rather than a mess at the bottom of the script.
+function do_upgrade {
+  logger -t scheduled-reboot "Upgrades configured to run prior to scheduled reboot. Proceeding to full package upgrade"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get -qq update 1>>$logs_dir/pre-reboot-upgrades.out 2>>$logs_dir/pre-reboot-upgrades.err
+  if [ $? -eq 0 ]; then
+    logger -t scheduled-reboot "APT Cache update completed successfully, proceeding to package upgrade"
+  else
+    logger -t scheduled-reboot "Problem with package cache update. Bailing on reboot. Notifying contacts"
+    bail_and_mail "pre-reboot package cache update failed and needs to be investigated prior to rebooting" "$alert_mailsubject" fatal
+  fi
+  apt-get -qq -y upgrade 1>>$logs_dir/pre-reboot-upgrades.out 2>>$logs_dir/pre-reboot-upgrades.err
+  # Did the package upgrades work?  If so, proceed to reboot.  Otherwise bail on the reboot and email people to investigate.
+  if [ $? -eq 0 ]; then
+    logger -t scheduled-reboot "Upgrades completed. Proceeding to reboot"
+  else
+    logger -t scheduled-reboot "Problem with package upgrades. Bailing on reboot. Notifying contacts"
+    bail_and_mail "pre-reboot upgrades failed and need to be investigated prior to rebooting" "$alert_mailsubject" fatal
+  fi
+}
+
+# We do **not** want to reboot a system that has package operations underway.  Typically package
+#   operations inhibit reboot, but I can't find definitive proof that this is always trustworthy,
+#   so this is another layer of safety.
+#
+# Here we initialize 'dpkg_lock' which is either 'locked' if a package operation is underway,
+#   or 'unlocked' if no package operation is underway.
+#
+# We use 'fuser' to examine the lock file and bail if a package manager has it open.
+function check_dpkg_lock {
+  dpkg_lock="locked"
+  fuser /var/lib/dpkg/lock 1>/dev/null || export dpkg_lock="unlocked"
+}
+
+
+# Always log start of logic to syslog
+logger -t scheduled-reboot "Begin scheduled reboot process"
+
+check_dpkg_lock
+
+# If no package operation is underway, the proceed.
+if [ "$dpkg_lock" == "unlocked" ]; then
+  logger -t scheduled-reboot "Package updates are not running, clear to proceed"
+
+  pre_reboot_scripts
+
+  # If we want to upgrade before rebooting, here's where we do it.  This should always be set at the host_vars level.
+  if $upgrade_at_shutdown; then
+    do_upgrade
+  else
+    logger -t scheduled-reboot "Upgrades not configured to run prior to scheduled reboot. Rebooting now"
+  fi
+  logger -t scheduled-reboot "All optional pre-reboot tasks and upgrades complete, rebooting..."
+  systemctl reboot
+else
+  problem_state="Package upgrades already appear to be in progress. Cancelling this run of scheduled-reboot"
+  logger -t scheduled-reboot "$problem_state"
+  bail_and_mail "$problem_state" "$alert_mailsubject" fatal
+fi

@@ -1,0 +1,30 @@
+# Scheduled-Reboot
+# This file controls variables for the scheduled-reboot program
+#
+# 2022-09-04 Kodiak Firesmith <firesmith@protonmail.com>
+#
+#
+# Enable or disable scheduled reboots.  This provides an easy way to ensure
+#   that scheduled reboots don't fire if you need to disable them temporarily.
+#   Disabling ensures that the main task simply exits when called by the CRON job.
+#   [true|false]
+scheduled_reboots_disabled='false'
+#
+# Email at cron execution if reboots have been disabled locally? [true|false]
+email_when_disabled='true'
+#
+# Should we attempt a package upgrade at shutdown? [true|false]
+upgrade_at_shutdown='false'
+#
+# Notify this space-separated list of email addresses if an exception occurs.
+mailto='root'
+#
+# Email subject for any failures
+alert_mailsubject="ALERT: scheduled-reboot failed on $HOSTNAME"
+#
+# Base directory for /pre-reboot/, /post-reboot/, and /on-pre-reboot-failure/
+#   script directories.  This probably shouldn't be modified
+scripts_dir='/etc/scheduled-reboot'
+#
+# Directory for log files related to scheduled-reboot
+logs_dir='/var/log/scheduled-reboot'
