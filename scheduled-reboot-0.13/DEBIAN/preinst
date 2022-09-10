@@ -7,6 +7,8 @@ install --directory --group=root --owner=root --mode=0755 /etc/scheduled-reboot/
 install --directory --group=root --owner=root --mode=0755 /var/log/scheduled-reboot
 
 # pre-populate log files
+touch /var/log/scheduled-reboot/on-pre-reboot-failure-scripts.err
+touch /var/log/scheduled-reboot/on-pre-reboot-failure-scripts.out
 touch /var/log/scheduled-reboot/pre-reboot-scripts.err
 touch /var/log/scheduled-reboot/pre-reboot-scripts.out
 touch /var/log/scheduled-reboot/pre-reboot-upgrades.err

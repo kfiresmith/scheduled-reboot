@@ -53,19 +53,20 @@ function on_pre_reboot_failure {
   logger -t scheduled-reboot "Running any failure recovery scripts present in $scripts_dir/on-pre-reboot-failure if present"
   for script in $(ls -1 $scripts_dir/on-pre-reboot-failure/); do
     logger -t scheduled-reboot "Executing failure recovery script: $script"
-    bash $scripts_dir/on-pre-reboot-failure/$script
+    bash $scripts_dir/on-pre-reboot-failure/$script 1>>/tmp/on-pre-reboot-failure-script.out 2>>/tmp/on-pre-reboot-failure-script.err
     if [ $? -eq 0 ]; then
       logger -t scheduled-reboot "Failure recovery script: $script finished successfully"
     else
-      problem_state="Pre-reboot script problem: $script exited with a non-zero exit code"    
+      error_output="$(tail -1 /tmp/on-pre-reboot-failure-script.err)"
+      problem_state="Pre-reboot script problem: $script exited with a non-zero exit code"
       logger -t scheduled-reboot "$problem_state"
-      bail_and_mail "$problem_state" "$alert_subject" not_fatal
+      logger -t scheduled-reboot "Error output: $error_output"
+      bail_and_mail "$problem_state. Error: $error_output" "$alert_subject" not_fatal
     fi
   done
   logger -t scheduled-reboot "Failure recovery scripts phase completed. Ending scheduled-reboot process"
   exit 2
 }
-
 
 # This function will fire off any scripts present in the 'pre-reboot' folder.  Service owners can write
 #   scripts that gracefully stop or quiesce their services prior to the scheduled (optional) package upgrade

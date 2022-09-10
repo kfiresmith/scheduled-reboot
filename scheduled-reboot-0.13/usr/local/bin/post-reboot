@@ -7,6 +7,15 @@
 sysconfig_file=/etc/default/scheduled-reboot
 test -f $sysconfig_file && source $sysconfig_file
 
+# Function takes body,  subject, and fatal as parameters.
+# Fire off an email, and optionally exit the script.
+#
+function bail_and_mail () {
+  echo "$1" | mail -s "$2" $mailto
+  if [ "$3" == "fatal" ]; then
+    exit 2
+  fi
+}
 
 # This function will fire off any scripts present in the 'post-reboot' folder.  Service owners can write
 #   scripts that prepare their services after the scheduled (optional) package upgrade
@@ -19,9 +28,10 @@ function post_reboot_scripts {
       logger -t scheduled-reboot "Script: $script completed successfully"
     else
       error_output="$(tail -1 /tmp/post-reboot-script.err)"
-      logger -t scheduled-reboot "Problem with post-reboot script $script. Bailing on reboot. Notifying contacts"
+      problem_state="Post-reboot script problem: $script exited with a non-zero exit code"
+      logger -t scheduled-reboot "$problem_state"
       logger -t scheduled-reboot "Error output: $error_output"
-      echo "post-reboot script $script failed and needs to be investigated. Error: $error_output" | mail -s "ALERT: scheduled-reboot failed on $HOSTNAME" $mailto
+      bail_and_mail "$problem_state. Error: $error_output" "$alert_subject" not_fatal
     fi
   done
 }
