@@ -121,30 +121,32 @@ function do_upgrade {
 function check_dpkg_lock {
   dpkg_lock="locked"
   fuser /var/lib/dpkg/lock 1>/dev/null || export dpkg_lock="unlocked"
+  if [ "$dpkg_lock" == "unlocked" ]; then
+    logger -t scheduled-reboot "Package updates are not running, clear to proceed"
+  else
+    problem_state="Package operations already appear to be in progress. Cancelling this run of scheduled-reboot"
+    logger -t scheduled-reboot "$problem_state"
+    bail_and_mail "$problem_state" "$alert_mailsubject" fatal
+  fi
 }
 
 
 # Always log start of logic to syslog
 logger -t scheduled-reboot "Begin scheduled reboot process"
 
+# Ensure no package operations in progress
 check_dpkg_lock
 
-# If no package operation is underway, the proceed.
-if [ "$dpkg_lock" == "unlocked" ]; then
-  logger -t scheduled-reboot "Package updates are not running, clear to proceed"
+# Run any pre-reboot scripts present
+pre_reboot_scripts
 
-  pre_reboot_scripts
-
-  # If we want to upgrade before rebooting, here's where we do it.  This should always be set at the host_vars level.
-  if $upgrade_at_shutdown; then
-    do_upgrade
-  else
-    logger -t scheduled-reboot "Upgrades not configured to run prior to scheduled reboot. Rebooting now"
-  fi
-  logger -t scheduled-reboot "All optional pre-reboot tasks and upgrades complete, rebooting..."
-  systemctl reboot
+# If configured to upgrade immediately prior to shutdown, do so
+if $upgrade_at_shutdown; then
+  do_upgrade
+  logger -t scheduled-reboot "All optional pre-reboot tasks and upgrades complete, rebooting now"
 else
-  problem_state="Package upgrades already appear to be in progress. Cancelling this run of scheduled-reboot"
-  logger -t scheduled-reboot "$problem_state"
-  bail_and_mail "$problem_state" "$alert_mailsubject" fatal
+  logger -t scheduled-reboot "Upgrades not configured to run prior to scheduled reboot, rebooting now"
 fi
+
+# Finally, reboot
+systemctl reboot
