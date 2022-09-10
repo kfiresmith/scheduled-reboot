@@ -31,7 +31,7 @@ function post_reboot_scripts {
       problem_state="Post-reboot script problem: $script exited with a non-zero exit code"
       logger -t scheduled-reboot "$problem_state"
       logger -t scheduled-reboot "Error output: $error_output"
-      bail_and_mail "$problem_state. Error: $error_output" "$alert_subject" not_fatal
+      bail_and_mail "$problem_state. Error: $error_output" "$alert_mailsubject" not_fatal
     fi
   done
 }
