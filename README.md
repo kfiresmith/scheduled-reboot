@@ -15,6 +15,3 @@ When executed, the script `/usr/local/bin/scheduled-reboot` consults `/etc/defau
     Default: `root`.  This is a **space-separated** list of full email addresses to send any scheduled-reboot email to.
 
 After reading in setting, the script confirms that package operations are not already underway.  If any package operations are happening at the time of reboot 
-
-### To-do
- - Add tasks to create, populate, delete /etc/nologin
