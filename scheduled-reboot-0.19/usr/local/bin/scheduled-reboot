@@ -17,10 +17,11 @@
 
 # 2022-09-05 - Kodiak Firesmith <firesmith@protonmail.com>
 
-
 sysconfig_file=/etc/default/scheduled-reboot
 test -f $sysconfig_file && source $sysconfig_file
 
+# Never take path for granted. This script can be run many ways with many different (sometimes inherited) environments.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
 
 # Function takes body,  subject, and fatal as parameters.
 # Fire off an email, and optionally exit the script.
