@@ -6,7 +6,7 @@ Standards-Version: 4.4.1
 Homepage: https://github.com/kfiresmith/scheduled-reboot
 Vcs-Git: https://github.com/kfiresmith/scheduled-reboot
 Package: scheduled-reboot
-Version: 0.18
+Version: 0.20
 Section: utils
 Architecture: amd64
 Depends: apt, bsdutils, mailutils

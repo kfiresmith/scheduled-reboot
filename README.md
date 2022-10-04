@@ -49,4 +49,9 @@ Once the upgrade successfully completes, the system is rebooted.
 
 Upon successful boot, as part of entering the multi-user.target stage, anything in the post-reboot folder will be executed.
 
+### Building the APT package
 
+1. Make any necessary changes to the content of scheduled-reboot
+2. Update the `Version:` setting in the DEBIAN/control file of the package folder hierarchy
+3. Git mv the package folder hierarchy from the old version number to the new version number
+4. Run `dpkg --build ./scheduled-reboot-n.nn
