@@ -71,7 +71,8 @@ function on_pre_reboot_failure {
 #   and reboot.
 function pre_reboot_scripts {
   logger -t scheduled-reboot "Kicking off pre-reboot scripts if any exist"
-  date 1>>$logs_dir/pre-reboot-scripts.out | tee -a $logs_dir/pre-reboot-scripts.err
+  # Log the timestamp to both the out and err logs
+  date | tee -a "$logs_dir/pre-reboot-scripts.err" >> "$logs_dir/pre-reboot-scripts.out"
   for script in $(ls -1 $scripts_dir/pre-reboot/); do
     logger -t scheduled-reboot "Executing script: $script"
     bash $scripts_dir/pre-reboot/$script 1>>$logs_dir/pre-reboot-scripts.out 2>>$logs_dir/pre-reboot-scripts.err
