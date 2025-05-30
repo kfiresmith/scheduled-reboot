@@ -1,0 +1,66 @@
+.TH scheduled-reboot 8 "2022-09-05" "scheduled-reboot 0.20" "System Administration"
+.SH NAME
+scheduled-reboot \- script driven framework for automated reboots
+.SH SYNOPSIS
+.B scheduled-reboot
+.SH DESCRIPTION
+.B scheduled-reboot
+is a helper script intended to be invoked from cron or a systemd timer. It
+executes optional site provided scripts, performs package upgrades when
+configured to do so, and reboots the system in a controlled manner.
+.PP
+The behaviour of the script is governed by
+.I /etc/default/scheduled-reboot
+which defines whether automated reboots are enabled, where log files are
+written and who receives notification e\-mails.
+.SH CONFIGURATION
+The default configuration file ships with the package and documents all
+available settings:
+.TP
+.B scheduled_reboots_disabled
+Boolean toggle to inhibit reboots.
+.TP
+.B email_when_disabled
+Send a reminder e\-mail when a reboot was skipped due to the toggle.
+.TP
+.B upgrade_at_shutdown
+Perform a full package upgrade before rebooting.
+.TP
+.B mailto
+Space separated list of addresses that receive any generated e\-mails.
+.TP
+.B scripts_dir
+Base directory holding
+.I pre\-reboot,
+.I on\-pre\-reboot\-failure
+and
+.I post\-reboot
+script directories.
+.TP
+.B logs_dir
+Directory used for runtime log files.
+.SH FILES
+.TP
+.I /usr/local/bin/scheduled-reboot
+Main script performing the reboot workflow.
+.TP
+.I /usr/local/bin/post-reboot
+Invoked after boot via
+.IR post-reboot.service .
+.TP
+.I /etc/default/scheduled-reboot
+Configuration file read by both scripts.
+.TP
+.I /etc/scheduled-reboot/pre-reboot/
+Optional scripts executed before the reboot.
+.TP
+.I /etc/scheduled-reboot/on-pre-reboot-failure/
+Scripts run if a pre\-reboot script fails.
+.TP
+.I /etc/scheduled-reboot/post-reboot/
+Scripts run once the system has booted again.
+.SH SEE ALSO
+.BR systemctl (1),
+.BR cron (8)
+.SH AUTHOR
+Kodiak Firesmith <firesmith@protonmail.com>

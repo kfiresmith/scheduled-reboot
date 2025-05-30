@@ -59,3 +59,9 @@ Upon successful boot, as part of entering the multi-user.target stage, anything 
 2. Update the `Version:` setting in the DEBIAN/control file of the package folder hierarchy
 3. Git mv the package folder hierarchy from the old version number to the new version number
 4. Run `dpkg --build ./scheduled-reboot-n.nn` to create the Debian package
+
+### Manual page
+
+The package installs a manual page in `/usr/local/share/man/man8`.  View it
+with `man scheduled-reboot` for a concise reference of configuration and
+operation.
