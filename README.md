@@ -21,8 +21,12 @@ When executed, the script `/usr/local/bin/scheduled-reboot` consults `/etc/defau
     Default: `true`.  Sends an email to notify the administrator at scheduled runtime if scheduled reboots have been disabled.
  - `upgrade_at_shutdown: [true|false]`
     Default: false.  Whether to run a full package upgrade immediately prior to reboot.
- - `mailto: [string]`
+- `mailto: [string]`
     Default: `root`.  This is a **space-separated** list of full email addresses to send any scheduled-reboot email to.
+ - `scripts_dir: [string]`
+    Default: `/etc/scheduled-reboot`. Base directory where the `pre-reboot`, `post-reboot`, and `on-pre-reboot-failure` script folders are located.
+ - `logs_dir: [string]`
+    Default: `/var/log/scheduled-reboot`. Directory used for scheduled-reboot log files.
 
 
 **Pre/Post/On-pre-failure tasks**
