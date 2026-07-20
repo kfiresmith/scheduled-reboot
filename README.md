@@ -4,7 +4,7 @@ Simple script-driven framework for executing orderly scheduled reboots that opti
 
 scheduled-reboot is meant to be invoked from cron or from a systemd timer.
 
-Current support is limited to Ubuntu 16+, but this system likely works fine on Debian.  I just haven't tested that.  If I get saddled with enough Red Hat variant servers, I'll probably write in support for RPM-based distributions at some point.
+The scripts support Debian/Ubuntu systems using APT and RHEL-family systems using DNF or YUM. They require Bash and common Linux utilities.
 
 ### Configuration
 
@@ -35,7 +35,9 @@ When executed, the script `/usr/local/bin/scheduled-reboot` consults `/etc/defau
 Folders at `/etc/scheduled-reboot/pre-reboot`, `/etc/scheduled-reboot/on-pre-reboot-failure`, and `/etc/scheduled-reboot/post-reboot` can store any custom bash scripts that might be needed to help prepare the system for reboot, or to perform tasks immediately after reboot.
 
 
-Numeric prefixes can be added to these scripts to ensure deliberate order of operations.  For example, in `pre-reboot/`, you might have: `00-first_task`, and `10-second_task` and so on.
+Numeric prefixes can be added to these scripts to ensure deliberate order of operations. Only regular files with the executable bit set and a shebang (`#!`) are run; the shebang selects Bash, Python, or another installed interpreter. Files are run directly, not forcibly through Bash.
+
+During maintenance, scheduled-reboot creates `/etc/nologin` only when that file does not already exist. The post-reboot service removes it only when its contents match the scheduled-reboot maintenance marker, so an administrator's existing `/etc/nologin` is never overwritten or removed.
 
 ### Operations order
 
