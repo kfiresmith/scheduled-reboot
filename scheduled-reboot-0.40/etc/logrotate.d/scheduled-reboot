@@ -1,0 +1,9 @@
+/var/log/scheduled-reboot/*.log /var/log/scheduled-reboot/*.out /var/log/scheduled-reboot/*.err {
+    monthly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root root
+}

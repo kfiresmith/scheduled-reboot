@@ -1,0 +1,237 @@
+#!/bin/bash
+
+set -Eeuo pipefail
+IFS=$' \t\n'
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+
+readonly CONFIG=/etc/default/scheduled-reboot
+readonly NOLOGIN=/etc/nologin
+readonly TAG=scheduled-reboot
+readonly VERSION=0.40
+readonly NOLOGIN_TEXT='System maintenance is in progress. Please try again later.'
+
+scripts_dir=/etc/scheduled-reboot
+logs_dir=/var/log/scheduled-reboot
+script_timeout_seconds=900
+run_id=$(printf '%s-%s' "$(date -u +%Y%m%dT%H%M%SZ)" "$$")
+temporary_files=()
+
+mailto=root
+alert_mailsubject="ALERT: scheduled-reboot failed on $(hostname -s 2>/dev/null || echo localhost)"
+case ${1:-} in
+    '')
+        ;;
+    --version)
+        printf "%s %s\n" "$TAG" "$VERSION"
+        exit 0
+        ;;
+    *)
+        printf 'Usage: %s [--version]\n' "$0" >&2
+        exit 64
+        ;;
+esac
+
+if [[ -r $CONFIG ]]; then
+    source "$CONFIG"
+fi
+
+
+log() {
+    logger -t scheduled-reboot -- "$*" || :
+}
+
+
+mail_alert() {
+    local -a recipients
+
+    read -r -a recipients <<< "${mailto:-}"
+
+    if ((${#recipients[@]} == 0)); then
+        log "run_id=$run_id level=warning event=mail_skipped reason=no_recipients"
+        return 0
+    fi
+
+    if ! command -v mail >/dev/null 2>&1; then
+        log "run_id=$run_id level=error event=mail_failed reason=mail_command_missing"
+        return 1
+    fi
+
+    if ! printf '%s\n' "$1" | mail -s "$2" "${recipients[@]}"; then
+        log "run_id=$run_id level=error event=mail_failed"
+        return 1
+    fi
+}
+
+
+mail_alert_with_logs() {
+    local message=$1
+    local subject=$2
+    shift 2
+    local file
+    local body
+    body=$(printf "%s %s\n\n%s\n" "$TAG" "$VERSION" "$message")
+    for file in "$@"; do
+        [[ -s $file ]] || continue
+        body+=$(printf "\n===== %s =====\n" "$file")
+        body+=$(cat -- "$file") || {
+            log "run_id=$run_id level=error event=log_read_failed file=$file"
+            return 1
+        }
+    done
+    mail_alert "$body" "$subject"
+}
+
+
+die() {
+    local message=$1
+    log "run_id=$run_id level=error event=failure message=$message"
+    mail_alert_with_logs "$message" "$alert_mailsubject" || :
+    exit 2
+}
+
+
+timestamp_file() {
+    local input=$1
+    local output=$2
+    local line
+
+    while IFS= read -r line || [[ -n $line ]]; do
+        printf '[%(%Y-%m-%dT%H:%M:%S%z)T] %s\n' -1 "$line"
+    done <"$input" >>"$output"
+}
+
+
+run_logged() {
+    local stdout_log=$1
+    local stderr_log=$2
+    local timeout_seconds=$3
+    local label=$4
+    shift 4
+
+    local stdout_tmp
+    local stderr_tmp
+    local rc
+    local started=$SECONDS
+
+    stdout_tmp=$(mktemp "$logs_dir/.stdout.XXXXXX") ||
+        return 125
+    temporary_files+=("$stdout_tmp")
+    stderr_tmp=$(mktemp "$logs_dir/.stderr.XXXXXX") || {
+        rm -f -- "$stdout_tmp"
+        return 125
+    }
+    temporary_files+=("$stderr_tmp")
+
+    log "run_id=$run_id phase=$label event=start command=$* timeout_seconds=$timeout_seconds"
+
+    if timeout --foreground --kill-after=30s "$timeout_seconds" "$@" >"$stdout_tmp" 2>"$stderr_tmp"; then
+        rc=0
+    else
+        rc=$?
+    fi
+
+    if ! timestamp_file "$stdout_tmp" "$stdout_log" ||
+        ! timestamp_file "$stderr_tmp" "$stderr_log"; then
+        rc=125
+    fi
+    rm -f -- "$stdout_tmp" "$stderr_tmp"
+    log "run_id=$run_id phase=$label event=finish status=$rc elapsed_seconds=$((SECONDS - started))"
+
+    return "$rc"
+}
+
+
+cleanup() {
+    local temporary_file
+    for temporary_file in "${temporary_files[@]}"; do
+        rm -f -- "$temporary_file" || :
+    done
+}
+
+trap cleanup EXIT
+
+if [[ ! $script_timeout_seconds =~ ^[1-9][0-9]*$ ]]; then
+    die 'Invalid timeout: script_timeout_seconds'
+fi
+
+if ! command -v timeout >/dev/null 2>&1; then
+    die 'timeout is required'
+fi
+
+scripts() {
+    local directory=$1
+
+    if [[ -d $directory ]]; then
+        find "$directory" -mindepth 1 -maxdepth 1 -type f -perm /111 -print0 |
+            sort -z
+    fi
+}
+
+if [[
+    -f $NOLOGIN &&
+    ! -L $NOLOGIN &&
+    $(cat -- "$NOLOGIN" 2>/dev/null || :) == "$NOLOGIN_TEXT"
+]]; then
+    rm -f -- "$NOLOGIN" || :
+fi
+
+install -d -m 0755 -- "$logs_dir" ||
+    die "Cannot create $logs_dir"
+
+log_files=(
+    post-reboot-scripts.out
+    post-reboot-scripts.err
+)
+
+for log_file in "${log_files[@]}"; do
+    touch "$logs_dir/$log_file" ||
+        die "Cannot create log $log_file"
+done
+
+post_reboot_stdout="$logs_dir/post-reboot-scripts.out"
+post_reboot_stderr="$logs_dir/post-reboot-scripts.err"
+
+failed=0
+script_list=$(mktemp "$logs_dir/.scripts.XXXXXX") ||
+    die 'Cannot create script discovery file'
+temporary_files+=("$script_list")
+
+if ! scripts "$scripts_dir/post-reboot" >"$script_list"; then
+    die "Cannot discover post-reboot scripts in $scripts_dir/post-reboot"
+fi
+
+while IFS= read -r -d '' script; do
+    if [[ ! -r $script ]]; then
+        log "run_id=$run_id level=error event=script_read_failed phase=post-reboot script=$script"
+        failed=1
+        continue
+    fi
+
+    first_line=$(head -n 1 -- "$script") ||
+        die "Cannot read post-reboot script: $script"
+
+    if [[ $first_line != '#!'* ]]; then
+        log "Skipping executable without shebang: $script"
+        continue
+    fi
+
+    log "Executing post-reboot script: $script"
+
+    if ! run_logged "$post_reboot_stdout" "$post_reboot_stderr" "$script_timeout_seconds" "post-reboot:$script" "$script"; then
+        log "ERROR: post-reboot script failed: $script"
+        failed=1
+    fi
+done <"$script_list"
+
+if ((failed)); then
+    mail_alert_with_logs \
+        'One or more post-reboot scripts failed.' \
+        "$alert_mailsubject" \
+        "$post_reboot_stdout" \
+        "$post_reboot_stderr"
+
+    exit 2
+fi
+
+log 'Post-reboot tasks completed successfully'

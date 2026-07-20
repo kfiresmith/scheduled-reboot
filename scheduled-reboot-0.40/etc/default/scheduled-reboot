@@ -16,6 +16,12 @@ email_when_disabled='true'
 # Should we attempt a package upgrade at shutdown? [true|false]
 upgrade_at_shutdown='false'
 #
+# Maximum runtime for each custom script, in seconds.
+script_timeout_seconds='900'
+#
+# Maximum runtime for each package-manager command, in seconds.
+package_manager_timeout_seconds='1800'
+#
 # Notify this space-separated list of email addresses if an exception occurs.
 mailto='root'
 #

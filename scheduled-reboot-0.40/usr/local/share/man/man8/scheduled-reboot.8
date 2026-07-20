@@ -1,13 +1,18 @@
-.TH scheduled-reboot 8 "2022-09-05" "scheduled-reboot 0.20" "System Administration"
+.TH scheduled-reboot 8 "2026-07-20" "scheduled-reboot 0.40" "System Administration"
 .SH NAME
 scheduled-reboot \- script driven framework for automated reboots
 .SH SYNOPSIS
-.B scheduled-reboot
+.B scheduled-reboot [--version]
 .SH DESCRIPTION
 .B scheduled-reboot
 is a helper script intended to be invoked from cron or a systemd timer. It
 executes optional site provided scripts, performs package upgrades when
 configured to do so, and reboots the system in a controlled manner.
+.PP
+The \fB--version\fR option prints the installed version and exits.
+.PP
+Output captured from scripts and package-manager commands is appended to the
+custom log files with an ISO-8601 timestamp and timezone on each line.
 .PP
 The behaviour of the script is governed by
 .I /etc/default/scheduled-reboot
@@ -26,6 +31,12 @@ Send a reminder e\-mail when a reboot was skipped due to the toggle.
 .B upgrade_at_shutdown
 Perform a full package upgrade before rebooting.
 .TP
+.B script_timeout_seconds
+Maximum runtime for each custom script, in seconds.
+.TP
+.B package_manager_timeout_seconds
+Maximum runtime for each package-manager command, in seconds.
+.TP
 .B mailto
 Space separated list of addresses that receive any generated e\-mails.
 .TP
@@ -39,6 +50,13 @@ script directories.
 .TP
 .B logs_dir
 Directory used for runtime log files.
+.PP
+Package locks are checked before maintenance begins. If a package operation is
+already active, scheduled-reboot waits up to five minutes for it to finish;
+the run is cancelled if the lock remains active.
+.PP
+Logs are rotated monthly and retained for 12 rotations by
+.IR /etc/logrotate.d/scheduled-reboot .
 .SH FILES
 .TP
 .I /usr/local/bin/scheduled-reboot
