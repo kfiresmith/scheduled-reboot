@@ -26,6 +26,7 @@ alert_mailsubject="ALERT: scheduled-reboot failed on $(hostname -s 2>/dev/null |
 scripts_dir=/etc/scheduled-reboot
 logs_dir=/var/log/scheduled-reboot
 run_id=$(printf '%s-%s' "$(date -u +%Y%m%dT%H%M%SZ)" "$$")
+run_date=$(date +%Y-%m-%d)
 temporary_files=()
 
 case ${1:-} in
@@ -66,7 +67,8 @@ mail_alert() {
         return 1
     fi
 
-    if ! printf '%s\n' "$1" | mail -s "$2" "${recipients[@]}"; then
+    # Keep notifications readable in terminals and text-only mail clients.
+    if ! printf '%s\n' "$1" | fold -w 100 | mail -s "$2" "${recipients[@]}"; then
         log "run_id=$run_id level=error event=mail_failed"
         return 1
     fi
@@ -78,17 +80,62 @@ mail_alert_with_logs() {
     local subject=$2
     shift 2
     local file
+    local section
+    local max_lines
+    local -a error_files=()
+    local -a output_files=()
+    local -a other_files=()
     local body
     body=$(printf "%s %s\n\n%s\n" "$TAG" "$VERSION" "$message")
+
     for file in "$@"; do
+        case $file in
+            *.err) error_files+=("$file") ;;
+            *.out) output_files+=("$file") ;;
+            *) other_files+=("$file") ;;
+        esac
+    done
+
+    for file in "${error_files[@]}" "${other_files[@]}" "${output_files[@]}"; do
         [[ -s $file ]] || continue
-        body+=$(printf "\n===== %s =====\n" "$file")
-        body+=$(cat -- "$file") || {
+        max_lines=0
+        [[ $file == *.out ]] && max_lines=20
+        if ! section=$(format_log_file "$file" "$max_lines" "$run_date"); then
             log "run_id=$run_id level=error event=log_read_failed file=$file"
             return 1
-        }
+        fi
+        body+=$'\n'
+        body+=$(printf '===== %s =====' "$file")
+        body+=$'\n'
+        body+="$section"
+        body+=$'\n'
     done
     mail_alert "$body" "$subject"
+}
+
+
+format_log_file() {
+    local file=$1
+    local max_lines=$2
+    local date_prefix=$3
+    local line
+    local -a output_lines=()
+
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ $line == "[$date_prefix"* ]] || continue
+        if ((max_lines > 0)); then
+            output_lines+=("$line")
+            if ((${#output_lines[@]} > max_lines)); then
+                output_lines=("${output_lines[@]:1}")
+            fi
+        else
+            printf '%s\n' "$line"
+        fi
+    done <"$file"
+
+    if ((max_lines > 0 && ${#output_lines[@]} > 0)); then
+        printf '%s\n' "${output_lines[@]}"
+    fi
 }
 
 
