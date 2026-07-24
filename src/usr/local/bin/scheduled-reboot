@@ -7,18 +7,26 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/b
 
 readonly CONFIG=/etc/default/scheduled-reboot
 readonly TAG=scheduled-reboot
-readonly VERSION=0.40
+readonly VERSION=0.50
 readonly NOLOGIN=/etc/nologin
 readonly NOLOGIN_TEXT='System maintenance is in progress. Please try again later.'
 readonly LOCK_DIR=/run/lock/scheduled-reboot.lock
+readonly LOCK_PID_FILE=$LOCK_DIR/pid
+readonly REBOOT_REQUESTED_MARKER=/run/scheduled-reboot.reboot-requested
 readonly PACKAGE_LOCK_WAIT_SECONDS=300
 readonly PACKAGE_LOCK_POLL_SECONDS=1
+
+readonly EXIT_GENERAL=2
+readonly EXIT_CONFIG=3
+readonly EXIT_UPGRADE=4
+readonly EXIT_REBOOT=5
 
 scheduled_reboots_disabled=false
 email_when_disabled=true
 upgrade_at_shutdown=false
 script_timeout_seconds=900
 package_manager_timeout_seconds=1800
+max_output_bytes=10485760
 
 mailto=root
 alert_mailsubject="ALERT: scheduled-reboot failed on $(hostname -s 2>/dev/null || echo localhost)"
@@ -42,11 +50,6 @@ case ${1:-} in
         ;;
 esac
 
-if [[ -r $CONFIG ]]; then
-    source "$CONFIG"
-fi
-
-
 log() {
     logger -t "$TAG" -- "$*" || :
 }
@@ -54,6 +57,7 @@ log() {
 
 mail_alert() {
     local -a recipients
+    local failure_marker=${logs_dir:-/var/log/scheduled-reboot}/.mail-alert-failed
 
     read -r -a recipients <<< "${mailto:-}"
 
@@ -64,14 +68,23 @@ mail_alert() {
 
     if ! command -v mail >/dev/null 2>&1; then
         log "run_id=$run_id level=error event=mail_failed reason=mail_command_missing"
+        # Best-effort: syslog can go unnoticed, so also leave a standing
+        # sentinel file that external monitoring can check for, since a
+        # failed alert is otherwise silent to anyone but this log.
+        printf 'run_id=%s reason=mail_command_missing\n' "$run_id" \
+            >"$failure_marker" 2>/dev/null || :
         return 1
     fi
 
     # Keep notifications readable in terminals and text-only mail clients.
     if ! printf '%s\n' "$1" | fold -w 100 | mail -s "$2" "${recipients[@]}"; then
         log "run_id=$run_id level=error event=mail_failed"
+        printf 'run_id=%s reason=mail_command_failed\n' "$run_id" \
+            >"$failure_marker" 2>/dev/null || :
         return 1
     fi
+
+    rm -f -- "$failure_marker" 2>/dev/null || :
 }
 
 
@@ -150,6 +163,22 @@ timestamp_file() {
 }
 
 
+cap_output_file() {
+    local file=$1
+    local size
+
+    size=$(stat -c '%s' -- "$file" 2>/dev/null) || return 0
+    ((size > max_output_bytes)) || return 0
+
+    {
+        head -c "$max_output_bytes" -- "$file"
+        printf '\n[scheduled-reboot: output truncated at %d of %d bytes]\n' \
+            "$max_output_bytes" "$size"
+    } >"$file.capped" 2>/dev/null &&
+        mv -- "$file.capped" "$file"
+}
+
+
 run_logged() {
     local stdout_log=$1
     local stderr_log=$2
@@ -160,6 +189,7 @@ run_logged() {
     local stdout_tmp
     local stderr_tmp
     local rc
+    local child_pid
     local started=$SECONDS
 
     stdout_tmp=$(mktemp "$logs_dir/.stdout.XXXXXX") ||
@@ -173,11 +203,32 @@ run_logged() {
 
     log "run_id=$run_id phase=$label event=start command=$* timeout_seconds=$timeout_seconds"
 
-    if timeout --foreground --kill-after=30s "$timeout_seconds" "$@" >"$stdout_tmp" 2>"$stderr_tmp"; then
+    # setsid makes the command (and its ordinary, non-detaching children)
+    # leader of a new process group equal to its own PID, so that on
+    # timeout we can sweep the whole group below -- `timeout` by itself
+    # only ever signals its direct child, so anything the command
+    # backgrounds on its own would otherwise outlive the timeout. This
+    # cannot catch a child that calls setsid() itself to fully detach into
+    # its own session.
+    setsid timeout --foreground --kill-after=30s "$timeout_seconds" "$@" \
+        >"$stdout_tmp" 2>"$stderr_tmp" &
+    child_pid=$!
+
+    if wait "$child_pid"; then
         rc=0
     else
         rc=$?
     fi
+
+    if kill -0 -- "-$child_pid" 2>/dev/null; then
+        log "run_id=$run_id level=warning event=residual_processes phase=$label pgid=$child_pid"
+        kill -TERM -- "-$child_pid" 2>/dev/null || :
+        sleep 5
+        kill -KILL -- "-$child_pid" 2>/dev/null || :
+    fi
+
+    cap_output_file "$stdout_tmp"
+    cap_output_file "$stderr_tmp"
 
     if ! timestamp_file "$stdout_tmp" "$stdout_log" ||
         ! timestamp_file "$stderr_tmp" "$stderr_log"; then
@@ -190,11 +241,44 @@ run_logged() {
 }
 
 die() {
-    local message=$1
-    shift
-    log "run_id=$run_id level=error event=failure message=$message"
+    local exit_code=$1
+    local message=$2
+    shift 2
+    log "run_id=$run_id level=error event=failure message=$message exit_code=$exit_code"
     mail_alert_with_logs "$message" "$alert_mailsubject" "$@" || :
-    exit 2
+    exit "$exit_code"
+}
+
+
+path_is_secure() {
+    local path=$1
+    local current=$path
+    local owner mode
+
+    while true; do
+        read -r owner mode < <(stat -c '%u %a' -- "$current" 2>/dev/null) || return 2
+
+        ((owner == 0)) || return 1
+        (( (8#$mode & 8#022) == 0 )) || return 1
+
+        [[ $current == / ]] && return 0
+        current=$(dirname -- "$current")
+    done
+}
+
+
+require_secure_path() {
+    local path=$1
+    local label=$2
+    local rc=0
+
+    path_is_secure "$path" || rc=$?
+
+    case $rc in
+        0) return 0 ;;
+        1) die "$EXIT_CONFIG" "Refusing to trust $label: not root-owned or writable by group/other somewhere in its path: $path" ;;
+        *) die "$EXIT_CONFIG" "Cannot verify ownership/permissions of $label: $path" ;;
+    esac
 }
 
 
@@ -212,12 +296,39 @@ cleanup() {
         remove_nologin
     fi
 
+    rm -f -- "$LOCK_PID_FILE" 2>/dev/null || :
     rmdir -- "$LOCK_DIR" 2>/dev/null || :
 
     local temporary_file
     for temporary_file in "${temporary_files[@]}"; do
         rm -f -- "$temporary_file" || :
     done
+}
+
+
+acquire_lock() {
+    if mkdir -- "$LOCK_DIR" 2>/dev/null; then
+        printf '%s\n' "$$" >"$LOCK_PID_FILE" 2>/dev/null || :
+        return 0
+    fi
+
+    local lock_pid
+    lock_pid=$(cat -- "$LOCK_PID_FILE" 2>/dev/null || :)
+
+    if [[ $lock_pid =~ ^[0-9]+$ ]] && kill -0 "$lock_pid" 2>/dev/null; then
+        log "Another scheduled-reboot process (pid $lock_pid) is running; skipping"
+        return 1
+    fi
+
+    log "run_id=$run_id level=warning event=stale_lock_removed lock_dir=$LOCK_DIR previous_pid=${lock_pid:-unknown}"
+    rm -rf -- "$LOCK_DIR" 2>/dev/null || :
+
+    if ! mkdir -- "$LOCK_DIR" 2>/dev/null; then
+        log 'Another scheduled-reboot process is running; skipping'
+        return 1
+    fi
+    printf '%s\n' "$$" >"$LOCK_PID_FILE" 2>/dev/null || :
+    return 0
 }
 
 
@@ -229,7 +340,7 @@ check_lock() {
     [[ -e $lock_file ]] || return 0
 
     if ! command -v fuser >/dev/null 2>&1; then
-        die 'fuser is required for package-lock checks'
+        die "$EXIT_CONFIG" 'fuser is required for package-lock checks'
     fi
 
     if fuser "$lock_file" >/dev/null 2>&1; then
@@ -244,7 +355,7 @@ check_lock() {
 
             while ((waited < PACKAGE_LOCK_WAIT_SECONDS)); do
                 sleep "$PACKAGE_LOCK_POLL_SECONDS" ||
-                    die "Interrupted while waiting for package lock: $lock_file"
+                    die "$EXIT_GENERAL" "Interrupted while waiting for package lock: $lock_file"
                 waited=$((waited + PACKAGE_LOCK_POLL_SECONDS))
 
                 if fuser "$lock_file" >/dev/null 2>&1; then
@@ -259,18 +370,18 @@ check_lock() {
                         return 0
                         ;;
                     *)
-                        die "Cannot inspect package lock: $lock_file"
+                        die "$EXIT_GENERAL" "Cannot inspect package lock: $lock_file"
                         ;;
                 esac
             done
 
-            die "Package operation still in progress after ${PACKAGE_LOCK_WAIT_SECONDS}s: $lock_file"
+            die "$EXIT_GENERAL" "Package operation still in progress after ${PACKAGE_LOCK_WAIT_SECONDS}s: $lock_file"
             ;;
         1)
             return 0
             ;;
         *)
-            die "Cannot inspect package lock: $lock_file"
+            die "$EXIT_GENERAL" "Cannot inspect package lock: $lock_file"
             ;;
     esac
 }
@@ -318,6 +429,12 @@ run_scripts() {
             continue
         fi
 
+        if ! path_is_secure "$script"; then
+            log "run_id=$run_id level=error event=script_insecure phase=$phase script=$script"
+            failed=1
+            continue
+        fi
+
         local first_line
         if ! first_line=$(head -n 1 -- "$script"); then
             log "run_id=$run_id level=error event=script_read_failed phase=$phase script=$script"
@@ -347,32 +464,41 @@ run_scripts() {
 }
 
 
+if [[ -r $CONFIG ]]; then
+    require_secure_path "$CONFIG" 'config file'
+    source "$CONFIG"
+fi
+
 for variable in \
     scheduled_reboots_disabled \
     email_when_disabled \
     upgrade_at_shutdown
 do
     if [[ ${!variable} != true && ${!variable} != false ]]; then
-        die "Invalid boolean: $variable"
+        die "$EXIT_CONFIG" "Invalid boolean: $variable"
     fi
 done
 
-for variable in script_timeout_seconds package_manager_timeout_seconds; do
+for variable in script_timeout_seconds package_manager_timeout_seconds max_output_bytes; do
     if [[ ! ${!variable} =~ ^[1-9][0-9]*$ ]]; then
-        die "Invalid timeout: $variable"
+        die "$EXIT_CONFIG" "Invalid timeout: $variable"
     fi
 done
 
 if ! command -v timeout >/dev/null 2>&1; then
-    die 'timeout is required'
+    die "$EXIT_CONFIG" 'timeout is required'
+fi
+
+if ! command -v setsid >/dev/null 2>&1; then
+    die "$EXIT_CONFIG" 'setsid is required'
 fi
 
 if [[ $scripts_dir != /* || $logs_dir != /* ]]; then
-    die 'Configured paths must be absolute'
+    die "$EXIT_CONFIG" 'Configured paths must be absolute'
 fi
 
 install -d -m 0755 -- "$logs_dir" ||
-    die "Cannot create $logs_dir"
+    die "$EXIT_GENERAL" "Cannot create $logs_dir"
 
 log_files=(
     pre-reboot-scripts.out
@@ -385,8 +511,16 @@ log_files=(
 
 for log_file in "${log_files[@]}"; do
     touch "$logs_dir/$log_file" ||
-        die "Cannot create log $log_file"
+        die "$EXIT_GENERAL" "Cannot create log $log_file"
 done
+
+if [[ -e $REBOOT_REQUESTED_MARKER ]]; then
+    log "run_id=$run_id level=warning event=reboot_not_observed marker=$REBOOT_REQUESTED_MARKER"
+    mail_alert_with_logs \
+        'A previous scheduled-reboot run requested a reboot via systemctl, but the system has not rebooted since (it may have been inhibited, delayed, or failed asynchronously). /etc/nologin may still be blocking logins from that run; investigate.' \
+        "$alert_mailsubject" ||
+        :
+fi
 
 if [[ $scheduled_reboots_disabled == true ]]; then
     log 'Scheduled reboots are disabled; skipping'
@@ -401,18 +535,17 @@ if [[ $scheduled_reboots_disabled == true ]]; then
     exit 0
 fi
 
-if ! mkdir -- "$LOCK_DIR" 2>/dev/null; then
-    log 'Another scheduled-reboot process is running; skipping'
+if ! acquire_lock; then
     exit 0
 fi
 
 reboot_requested=0
 trap cleanup EXIT
 
-if [[ -x /usr/bin/dpkg ]]; then
+if command -v dpkg >/dev/null 2>&1; then
     check_lock /var/lib/dpkg/lock
     check_lock /var/lib/dpkg/lock-frontend
-elif [[ -x /usr/bin/rpm ]]; then
+elif command -v rpm >/dev/null 2>&1; then
     check_lock /var/lib/rpm/.rpm.lock
     check_lock /var/lib/rpm/.dbenv.lock
 fi
@@ -422,21 +555,21 @@ if [[ -e $NOLOGIN || -L $NOLOGIN ]]; then
 else
     temporary_nologin=$(
         mktemp /etc/.nologin.scheduled-reboot.XXXXXX
-    ) || die 'Cannot create /etc/nologin'
+    ) || die "$EXIT_GENERAL" 'Cannot create /etc/nologin'
 
     if ! printf '%s\n' "$NOLOGIN_TEXT" >"$temporary_nologin"; then
         rm -f -- "$temporary_nologin" || :
-        die 'Cannot write /etc/nologin'
+        die "$EXIT_GENERAL" 'Cannot write /etc/nologin'
     fi
 
     if ! chmod 0644 "$temporary_nologin"; then
         rm -f -- "$temporary_nologin" || :
-        die 'Cannot set permissions on /etc/nologin'
+        die "$EXIT_GENERAL" 'Cannot set permissions on /etc/nologin'
     fi
 
     if ! mv -- "$temporary_nologin" "$NOLOGIN"; then
         rm -f -- "$temporary_nologin"
-        die 'Cannot install /etc/nologin'
+        die "$EXIT_GENERAL" 'Cannot install /etc/nologin'
     fi
 fi
 
@@ -461,7 +594,7 @@ then
         :
 
     remove_nologin
-    exit 2
+    exit "$EXIT_GENERAL"
 fi
 
 if [[ $upgrade_at_shutdown == true ]]; then
@@ -472,35 +605,41 @@ if [[ $upgrade_at_shutdown == true ]]; then
         export DEBIAN_FRONTEND=noninteractive
 
         run_logged "$upgrade_stdout" "$upgrade_stderr" "$package_manager_timeout_seconds" apt-update apt-get -qq update ||
-            die 'APT update failed; reboot cancelled' "$upgrade_stdout" "$upgrade_stderr"
+            die "$EXIT_UPGRADE" 'APT update failed; reboot cancelled' "$upgrade_stdout" "$upgrade_stderr"
 
         run_logged "$upgrade_stdout" "$upgrade_stderr" "$package_manager_timeout_seconds" apt-upgrade apt-get -qq -y upgrade ||
-            die 'APT upgrade failed; reboot cancelled' "$upgrade_stdout" "$upgrade_stderr"
+            die "$EXIT_UPGRADE" 'APT upgrade failed; reboot cancelled' "$upgrade_stdout" "$upgrade_stderr"
 
     elif command -v dnf >/dev/null 2>&1; then
         run_logged "$upgrade_stdout" "$upgrade_stderr" "$package_manager_timeout_seconds" dnf-makecache dnf -y makecache ||
-            die 'DNF cache update failed; reboot cancelled' "$upgrade_stdout" "$upgrade_stderr"
+            die "$EXIT_UPGRADE" 'DNF cache update failed; reboot cancelled' "$upgrade_stdout" "$upgrade_stderr"
 
         run_logged "$upgrade_stdout" "$upgrade_stderr" "$package_manager_timeout_seconds" dnf-upgrade dnf -y upgrade ||
-            die 'DNF upgrade failed; reboot cancelled' "$upgrade_stdout" "$upgrade_stderr"
+            die "$EXIT_UPGRADE" 'DNF upgrade failed; reboot cancelled' "$upgrade_stdout" "$upgrade_stderr"
 
     elif command -v yum >/dev/null 2>&1; then
         run_logged "$upgrade_stdout" "$upgrade_stderr" "$package_manager_timeout_seconds" yum-makecache yum -y makecache ||
-            die 'YUM cache update failed; reboot cancelled' "$upgrade_stdout" "$upgrade_stderr"
+            die "$EXIT_UPGRADE" 'YUM cache update failed; reboot cancelled' "$upgrade_stdout" "$upgrade_stderr"
 
         run_logged "$upgrade_stdout" "$upgrade_stderr" "$package_manager_timeout_seconds" yum-update yum -y update ||
-            die 'YUM update failed; reboot cancelled' "$upgrade_stdout" "$upgrade_stderr"
+            die "$EXIT_UPGRADE" 'YUM update failed; reboot cancelled' "$upgrade_stdout" "$upgrade_stderr"
 
     else
-        die 'No supported package manager found'
+        die "$EXIT_CONFIG" 'No supported package manager found'
     fi
 fi
 
 log 'All pre-reboot tasks complete; requesting reboot'
 
+# Written to a tmpfs path that only survives until the next real reboot: if
+# it's still there next run, systemctl reboot returned success below but the
+# system never actually went down (see the reboot_not_observed check above).
+printf '%s\n' "$run_id" >"$REBOOT_REQUESTED_MARKER" 2>/dev/null || :
+
 if systemctl reboot; then
     reboot_requested=1
     trap - EXIT
 else
-    die 'systemctl reboot failed'
+    rm -f -- "$REBOOT_REQUESTED_MARKER" 2>/dev/null || :
+    die "$EXIT_REBOOT" 'systemctl reboot failed'
 fi

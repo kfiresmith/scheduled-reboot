@@ -8,12 +8,19 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/b
 readonly CONFIG=/etc/default/scheduled-reboot
 readonly NOLOGIN=/etc/nologin
 readonly TAG=scheduled-reboot
-readonly VERSION=0.40
+readonly VERSION=0.50
 readonly NOLOGIN_TEXT='System maintenance is in progress. Please try again later.'
+readonly REBOOT_REQUESTED_MARKER=/run/scheduled-reboot.reboot-requested
+readonly LOCK_DIR=/run/lock/post-reboot.lock
+readonly LOCK_PID_FILE=$LOCK_DIR/pid
+
+readonly EXIT_GENERAL=2
+readonly EXIT_CONFIG=3
 
 scripts_dir=/etc/scheduled-reboot
 logs_dir=/var/log/scheduled-reboot
 script_timeout_seconds=900
+max_output_bytes=10485760
 run_id=$(printf '%s-%s' "$(date -u +%Y%m%dT%H%M%SZ)" "$$")
 run_date=$(date +%Y-%m-%d)
 temporary_files=()
@@ -33,11 +40,6 @@ case ${1:-} in
         ;;
 esac
 
-if [[ -r $CONFIG ]]; then
-    source "$CONFIG"
-fi
-
-
 log() {
     logger -t scheduled-reboot -- "$*" || :
 }
@@ -45,6 +47,7 @@ log() {
 
 mail_alert() {
     local -a recipients
+    local failure_marker=${logs_dir:-/var/log/scheduled-reboot}/.mail-alert-failed
 
     read -r -a recipients <<< "${mailto:-}"
 
@@ -55,14 +58,23 @@ mail_alert() {
 
     if ! command -v mail >/dev/null 2>&1; then
         log "run_id=$run_id level=error event=mail_failed reason=mail_command_missing"
+        # Best-effort: syslog can go unnoticed, so also leave a standing
+        # sentinel file that external monitoring can check for, since a
+        # failed alert is otherwise silent to anyone but this log.
+        printf 'run_id=%s reason=mail_command_missing\n' "$run_id" \
+            >"$failure_marker" 2>/dev/null || :
         return 1
     fi
 
     # Keep notifications readable in terminals and text-only mail clients.
     if ! printf '%s\n' "$1" | fold -w 100 | mail -s "$2" "${recipients[@]}"; then
         log "run_id=$run_id level=error event=mail_failed"
+        printf 'run_id=%s reason=mail_command_failed\n' "$run_id" \
+            >"$failure_marker" 2>/dev/null || :
         return 1
     fi
+
+    rm -f -- "$failure_marker" 2>/dev/null || :
 }
 
 
@@ -131,10 +143,43 @@ format_log_file() {
 
 
 die() {
-    local message=$1
-    log "run_id=$run_id level=error event=failure message=$message"
+    local exit_code=$1
+    local message=$2
+    log "run_id=$run_id level=error event=failure message=$message exit_code=$exit_code"
     mail_alert_with_logs "$message" "$alert_mailsubject" || :
-    exit 2
+    exit "$exit_code"
+}
+
+
+path_is_secure() {
+    local path=$1
+    local current=$path
+    local owner mode
+
+    while true; do
+        read -r owner mode < <(stat -c '%u %a' -- "$current" 2>/dev/null) || return 2
+
+        ((owner == 0)) || return 1
+        (( (8#$mode & 8#022) == 0 )) || return 1
+
+        [[ $current == / ]] && return 0
+        current=$(dirname -- "$current")
+    done
+}
+
+
+require_secure_path() {
+    local path=$1
+    local label=$2
+    local rc=0
+
+    path_is_secure "$path" || rc=$?
+
+    case $rc in
+        0) return 0 ;;
+        1) die "$EXIT_CONFIG" "Refusing to trust $label: not root-owned or writable by group/other somewhere in its path: $path" ;;
+        *) die "$EXIT_CONFIG" "Cannot verify ownership/permissions of $label: $path" ;;
+    esac
 }
 
 
@@ -149,6 +194,22 @@ timestamp_file() {
 }
 
 
+cap_output_file() {
+    local file=$1
+    local size
+
+    size=$(stat -c '%s' -- "$file" 2>/dev/null) || return 0
+    ((size > max_output_bytes)) || return 0
+
+    {
+        head -c "$max_output_bytes" -- "$file"
+        printf '\n[scheduled-reboot: output truncated at %d of %d bytes]\n' \
+            "$max_output_bytes" "$size"
+    } >"$file.capped" 2>/dev/null &&
+        mv -- "$file.capped" "$file"
+}
+
+
 run_logged() {
     local stdout_log=$1
     local stderr_log=$2
@@ -159,6 +220,7 @@ run_logged() {
     local stdout_tmp
     local stderr_tmp
     local rc
+    local child_pid
     local started=$SECONDS
 
     stdout_tmp=$(mktemp "$logs_dir/.stdout.XXXXXX") ||
@@ -172,11 +234,32 @@ run_logged() {
 
     log "run_id=$run_id phase=$label event=start command=$* timeout_seconds=$timeout_seconds"
 
-    if timeout --foreground --kill-after=30s "$timeout_seconds" "$@" >"$stdout_tmp" 2>"$stderr_tmp"; then
+    # setsid makes the command (and its ordinary, non-detaching children)
+    # leader of a new process group equal to its own PID, so that on
+    # timeout we can sweep the whole group below -- `timeout` by itself
+    # only ever signals its direct child, so anything the command
+    # backgrounds on its own would otherwise outlive the timeout. This
+    # cannot catch a child that calls setsid() itself to fully detach into
+    # its own session.
+    setsid timeout --foreground --kill-after=30s "$timeout_seconds" "$@" \
+        >"$stdout_tmp" 2>"$stderr_tmp" &
+    child_pid=$!
+
+    if wait "$child_pid"; then
         rc=0
     else
         rc=$?
     fi
+
+    if kill -0 -- "-$child_pid" 2>/dev/null; then
+        log "run_id=$run_id level=warning event=residual_processes phase=$label pgid=$child_pid"
+        kill -TERM -- "-$child_pid" 2>/dev/null || :
+        sleep 5
+        kill -KILL -- "-$child_pid" 2>/dev/null || :
+    fi
+
+    cap_output_file "$stdout_tmp"
+    cap_output_file "$stderr_tmp"
 
     if ! timestamp_file "$stdout_tmp" "$stdout_log" ||
         ! timestamp_file "$stderr_tmp" "$stderr_log"; then
@@ -190,20 +273,63 @@ run_logged() {
 
 
 cleanup() {
+    rm -f -- "$LOCK_PID_FILE" 2>/dev/null || :
+    rmdir -- "$LOCK_DIR" 2>/dev/null || :
+
     local temporary_file
     for temporary_file in "${temporary_files[@]}"; do
         rm -f -- "$temporary_file" || :
     done
 }
 
-trap cleanup EXIT
+acquire_lock() {
+    if mkdir -- "$LOCK_DIR" 2>/dev/null; then
+        printf '%s\n' "$$" >"$LOCK_PID_FILE" 2>/dev/null || :
+        return 0
+    fi
 
-if [[ ! $script_timeout_seconds =~ ^[1-9][0-9]*$ ]]; then
-    die 'Invalid timeout: script_timeout_seconds'
+    local lock_pid
+    lock_pid=$(cat -- "$LOCK_PID_FILE" 2>/dev/null || :)
+
+    if [[ $lock_pid =~ ^[0-9]+$ ]] && kill -0 "$lock_pid" 2>/dev/null; then
+        log "Another post-reboot process (pid $lock_pid) is running; skipping"
+        return 1
+    fi
+
+    log "run_id=$run_id level=warning event=stale_lock_removed lock_dir=$LOCK_DIR previous_pid=${lock_pid:-unknown}"
+    rm -rf -- "$LOCK_DIR" 2>/dev/null || :
+
+    if ! mkdir -- "$LOCK_DIR" 2>/dev/null; then
+        log 'Another post-reboot process is running; skipping'
+        return 1
+    fi
+    printf '%s\n' "$$" >"$LOCK_PID_FILE" 2>/dev/null || :
+    return 0
+}
+
+if ! acquire_lock; then
+    exit 0
 fi
 
+trap cleanup EXIT
+
+if [[ -r $CONFIG ]]; then
+    require_secure_path "$CONFIG" 'config file'
+    source "$CONFIG"
+fi
+
+for variable in script_timeout_seconds max_output_bytes; do
+    if [[ ! ${!variable} =~ ^[1-9][0-9]*$ ]]; then
+        die "$EXIT_CONFIG" "Invalid timeout: $variable"
+    fi
+done
+
 if ! command -v timeout >/dev/null 2>&1; then
-    die 'timeout is required'
+    die "$EXIT_CONFIG" 'timeout is required'
+fi
+
+if ! command -v setsid >/dev/null 2>&1; then
+    die "$EXIT_CONFIG" 'setsid is required'
 fi
 
 scripts() {
@@ -223,8 +349,13 @@ if [[
     rm -f -- "$NOLOGIN" || :
 fi
 
+# $REBOOT_REQUESTED_MARKER lives on tmpfs and is already gone after a real
+# reboot; this is just a defensive removal in case /run is ever backed by
+# something persistent.
+rm -f -- "$REBOOT_REQUESTED_MARKER" 2>/dev/null || :
+
 install -d -m 0755 -- "$logs_dir" ||
-    die "Cannot create $logs_dir"
+    die "$EXIT_GENERAL" "Cannot create $logs_dir"
 
 log_files=(
     post-reboot-scripts.out
@@ -233,7 +364,7 @@ log_files=(
 
 for log_file in "${log_files[@]}"; do
     touch "$logs_dir/$log_file" ||
-        die "Cannot create log $log_file"
+        die "$EXIT_GENERAL" "Cannot create log $log_file"
 done
 
 post_reboot_stdout="$logs_dir/post-reboot-scripts.out"
@@ -241,11 +372,11 @@ post_reboot_stderr="$logs_dir/post-reboot-scripts.err"
 
 failed=0
 script_list=$(mktemp "$logs_dir/.scripts.XXXXXX") ||
-    die 'Cannot create script discovery file'
+    die "$EXIT_GENERAL" 'Cannot create script discovery file'
 temporary_files+=("$script_list")
 
 if ! scripts "$scripts_dir/post-reboot" >"$script_list"; then
-    die "Cannot discover post-reboot scripts in $scripts_dir/post-reboot"
+    die "$EXIT_GENERAL" "Cannot discover post-reboot scripts in $scripts_dir/post-reboot"
 fi
 
 while IFS= read -r -d '' script; do
@@ -255,8 +386,14 @@ while IFS= read -r -d '' script; do
         continue
     fi
 
+    if ! path_is_secure "$script"; then
+        log "run_id=$run_id level=error event=script_insecure phase=post-reboot script=$script"
+        failed=1
+        continue
+    fi
+
     first_line=$(head -n 1 -- "$script") ||
-        die "Cannot read post-reboot script: $script"
+        die "$EXIT_GENERAL" "Cannot read post-reboot script: $script"
 
     if [[ $first_line != '#!'* ]]; then
         log "Skipping executable without shebang: $script"
@@ -278,7 +415,7 @@ if ((failed)); then
         "$post_reboot_stdout" \
         "$post_reboot_stderr"
 
-    exit 2
+    exit "$EXIT_GENERAL"
 fi
 
 log 'Post-reboot tasks completed successfully'

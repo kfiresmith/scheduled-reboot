@@ -4,3 +4,4 @@
    executable scripts (bash, python, etc)
 - Add support for RHEL variants (DONE: DNF/YUM upgrades and RPM lock checks)
 - Add a manpage (DONE)
+- Package as .rpm in addition to .deb, with a single build script (DONE: build.sh --all/--deb/--rpm)

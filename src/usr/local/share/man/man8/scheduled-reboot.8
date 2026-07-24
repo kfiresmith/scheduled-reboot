@@ -1,4 +1,4 @@
-.TH scheduled-reboot 8 "2026-07-20" "scheduled-reboot 0.40" "System Administration"
+.TH scheduled-reboot 8 "2026-07-24" "scheduled-reboot 0.50" "System Administration"
 .SH NAME
 scheduled-reboot \- script driven framework for automated reboots
 .SH SYNOPSIS
@@ -36,6 +36,11 @@ Maximum runtime for each custom script, in seconds.
 .TP
 .B package_manager_timeout_seconds
 Maximum runtime for each package-manager command, in seconds.
+.TP
+.B max_output_bytes
+Per-stream (stdout/stderr) cap, in bytes, on captured output from each script
+or package-manager invocation; excess output is truncated before being
+appended to the log or included in alert e\-mails.
 .TP
 .B mailto
 Space separated list of addresses that receive any generated e\-mails.
@@ -77,6 +82,38 @@ Scripts run if a pre\-reboot script fails.
 .TP
 .I /etc/scheduled-reboot/post-reboot/
 Scripts run once the system has booted again.
+.TP
+.I /var/log/scheduled-reboot/.mail-alert-failed
+Created when an alert e\-mail could not be sent (e.g. the
+.B mail
+command is missing or failed); removed automatically once an alert is sent
+successfully. Its presence indicates that a prior failure may not have
+reached anyone and is intended to be checked by external monitoring.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 2
+General runtime failure.
+.TP
+.B 3
+Configuration or environment error (invalid setting, missing required
+command, insecure config file or script ownership/permissions).
+.TP
+.B 4
+A package-manager update or upgrade failed
+.RI ( scheduled-reboot
+only).
+.TP
+.B 5
+.B systemctl reboot
+failed
+.RI ( scheduled-reboot
+only).
+.TP
+.B 64
+Invalid command-line usage.
 .SH SEE ALSO
 .BR systemctl (1),
 .BR cron (8)

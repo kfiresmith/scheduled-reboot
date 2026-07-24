@@ -63,12 +63,27 @@ Once the upgrade successfully completes, the system is rebooted.
 
 Upon successful boot, as part of entering the multi-user.target stage, anything in the post-reboot folder will be executed.
 
-### Building the APT package
+### Repository layout
 
-1. Make any necessary changes to the content of scheduled-reboot
-2. Update the `Version:` setting in the DEBIAN/control file of the package folder hierarchy
-3. Git mv the package folder hierarchy from the old version number to the new version number
-4. Run `dpkg --build ./scheduled-reboot-n.nn` to create the Debian package
+- `src/` — the single, package-agnostic source tree (FHS layout: `etc/`, `usr/`). This is what gets installed on the target system, regardless of package format.
+- `packaging/deb/` — Debian-specific packaging metadata (`control`, `conffiles`).
+- `packaging/rpm/` — the RPM spec file.
+- `packaging/common/` — pre-install, post-install, and pre-remove provisioning logic shared verbatim by both package formats, so the two packages can't drift out of sync with each other.
+- `build.sh` — assembles ephemeral build trees under `/tmp` from the above and produces packages in `./dist/`.
+
+### Building packages
+
+Run `./build.sh` from the repository root:
+
+```
+./build.sh --all   # build both .deb and .rpm (default with no flags)
+./build.sh --deb    # build only the .deb
+./build.sh --rpm    # build only the .rpm
+```
+
+The script verifies that the version string in `packaging/deb/control`, `packaging/rpm/scheduled-reboot.spec`, the man page, and both scripts' `VERSION=` variables all agree before building anything, and checks for the required build tools (`dpkg-dev`/`fakeroot` for `.deb`, `rpm-build` for `.rpm`), telling you what to install if something's missing. Output packages are written to `./dist/`.
+
+To release a new version, bump the version string in all of those places (`packaging/deb/control`, `packaging/rpm/scheduled-reboot.spec`, the `.TH` line in the man page, and `VERSION=` in both `usr/local/bin/scheduled-reboot` and `usr/local/bin/post-reboot`), then run `./build.sh --all`.
 
 ### Manual page
 

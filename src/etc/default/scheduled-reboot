@@ -22,6 +22,11 @@ script_timeout_seconds='900'
 # Maximum runtime for each package-manager command, in seconds.
 package_manager_timeout_seconds='1800'
 #
+# Per-stream (stdout/stderr) cap, in bytes, on captured output from each
+#   script or package-manager invocation. Excess output is truncated before
+#   being appended to the log or included in alert emails.
+max_output_bytes='10485760'
+#
 # Notify this space-separated list of email addresses if an exception occurs.
 mailto='root'
 #

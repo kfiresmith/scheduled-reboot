@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 
 # pre-populate some directories
+install --directory --group=root --owner=root --mode=0755 /etc/scheduled-reboot
 install --directory --group=root --owner=root --mode=0755 /etc/scheduled-reboot/on-pre-reboot-failure
 install --directory --group=root --owner=root --mode=0755 /etc/scheduled-reboot/post-reboot
 install --directory --group=root --owner=root --mode=0755 /etc/scheduled-reboot/pre-reboot
