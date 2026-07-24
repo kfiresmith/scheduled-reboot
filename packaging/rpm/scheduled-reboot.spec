@@ -1,5 +1,5 @@
 Name:           scheduled-reboot
-Version:        0.50
+Version:        0.55
 Release:        1%{?dist}
 Summary:        Script-driven framework for performing automated patching & rebooting systems
 
@@ -45,5 +45,7 @@ cp -a etc usr %{buildroot}/
 %attr(0644,root,root) /usr/local/share/man/man8/scheduled-reboot.8
 
 %changelog
+* Fri Jul 24 2026 Kodiak Firesmith <firesmith@protonmail.com> - 0.55-1
+- See project README and git history for change details.
 * Fri Jul 24 2026 Kodiak Firesmith <firesmith@protonmail.com> - 0.50-1
 - See project README and git history for change details.
