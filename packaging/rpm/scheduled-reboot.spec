@@ -1,6 +1,6 @@
 Name:           scheduled-reboot
 Version:        0.55
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Script-driven framework for performing automated patching & rebooting systems
 
 License:        MIT
@@ -8,7 +8,8 @@ URL:            https://github.com/kfiresmith/scheduled-reboot
 Source0:        %{name}-%{version}.tar.gz
 
 BuildArch:      noarch
-Requires:       bash, coreutils, util-linux, logrotate, mailx
+# /bin/mailx, not mailx: EL9's s-nail provides the path but not the mailx name.
+Requires:       bash, coreutils, util-linux, logrotate, /bin/mailx
 
 %description
 Simple script-driven framework for executing orderly scheduled reboots that
@@ -45,6 +46,8 @@ cp -a etc usr %{buildroot}/
 %attr(0644,root,root) /usr/local/share/man/man8/scheduled-reboot.8
 
 %changelog
+* Thu Oct 01 2026 Kodiak Firesmith <firesmith@protonmail.com> - 0.55-2
+- Require /bin/mailx instead of mailx so EL9 (s-nail) can satisfy it.
 * Fri Jul 24 2026 Kodiak Firesmith <firesmith@protonmail.com> - 0.55-1
 - See project README and git history for change details.
 * Fri Jul 24 2026 Kodiak Firesmith <firesmith@protonmail.com> - 0.50-1
