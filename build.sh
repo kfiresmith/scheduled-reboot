@@ -112,13 +112,24 @@ check_rpm_build_deps() {
     fi
 }
 
+# Copy src/ into a build tree, plus a read-only reference copy of the shipped
+# defaults file. /etc/default/scheduled-reboot is a conffile; the reference
+# copy lets configuration management detect a locally modified conffile and
+# restore the pristine version (overrides belong in local.conf instead).
+stage_src_tree() {
+    local dest=$1
+    cp -a "$SRC_DIR/." "$dest/"
+    install -D -m 0644 "$SRC_DIR/etc/default/scheduled-reboot" \
+        "$dest/usr/local/share/scheduled-reboot/default.conf"
+}
+
 build_deb() {
     local version=$1
     local pkg_root="$BUILD_ROOT/deb/$PKG_NAME-$version"
 
     log "Assembling .deb build tree in $pkg_root"
     mkdir -p "$pkg_root"
-    cp -a "$SRC_DIR/." "$pkg_root/"
+    stage_src_tree "$pkg_root"
 
     mkdir -p "$pkg_root/DEBIAN"
     cp "$PACKAGING_DIR/deb/control" "$PACKAGING_DIR/deb/conffiles" "$pkg_root/DEBIAN/"
@@ -148,7 +159,7 @@ build_rpm() {
     log "Assembling .rpm build tree in $topdir"
     mkdir -p "$topdir"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
     mkdir -p "$src_root"
-    cp -a "$SRC_DIR/." "$src_root/"
+    stage_src_tree "$src_root"
     tar -C "$BUILD_ROOT/rpm-src" -czf "$topdir/SOURCES/$PKG_NAME-$version.tar.gz" "$PKG_NAME-$version"
 
     # Inline the shared provisioning scripts into the spec's scriptlet

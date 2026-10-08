@@ -25,12 +25,26 @@ When executed, the script `/usr/local/bin/scheduled-reboot` consults `/etc/defau
     Default: 900. Maximum runtime for each custom script.
 - `package_manager_timeout_seconds: [integer]`
     Default: 1800. Maximum runtime for each package-manager command.
+- `max_output_bytes: [integer]`
+    Default: 10485760. Per-stream cap on captured output from each script or package-manager command.
 - `mailto: [string]`
     Default: `root`.  This is a **space-separated** list of full email addresses to send any scheduled-reboot email to.
  - `scripts_dir: [string]`
     Default: `/etc/scheduled-reboot`. Base directory where the `pre-reboot`, `post-reboot`, and `on-pre-reboot-failure` script folders are located.
  - `logs_dir: [string]`
     Default: `/var/log/scheduled-reboot`. Directory used for scheduled-reboot log files.
+
+
+**Local overrides**
+
+
+`/etc/default/scheduled-reboot` is a package conffile. Don't edit it: once it's locally modified, any later release that changes it makes dpkg stop and ask what to do, and a non-interactive upgrade fails at that prompt.
+
+Put local settings in `/etc/scheduled-reboot/local.conf` instead. Both scripts source it after the defaults file, so anything set there wins. The package doesn't ship it, so configuration management can own it outright. It must be root-owned and not group- or other-writable, the same rule as the defaults file.
+
+An unmodified copy of the shipped defaults file is installed at `/usr/local/share/scheduled-reboot/default.conf`. Compare against it to find hosts whose conffile has been edited, and copy it back over to restore the pristine version.
+
+When `upgrade_at_shutdown` runs APT, it passes `--force-confdef --force-confold`, so a modified conffile is kept (the new version lands beside it as `.dpkg-dist`) rather than failing the upgrade.
 
 
 **Pre/Post/On-pre-failure tasks**

@@ -1,4 +1,4 @@
-.TH scheduled-reboot 8 "2026-07-24" "scheduled-reboot 0.55" "System Administration"
+.TH scheduled-reboot 8 "2026-10-08" "scheduled-reboot 0.56" "System Administration"
 .SH NAME
 scheduled-reboot \- script driven framework for automated reboots
 .SH SYNOPSIS
@@ -18,6 +18,12 @@ The behaviour of the script is governed by
 .I /etc/default/scheduled-reboot
 which defines whether automated reboots are enabled, where log files are
 written and who receives notification e\-mails.
+.PP
+Settings in
+.I /etc/scheduled-reboot/local.conf
+are read afterwards and take precedence. Put local changes there rather than
+editing the defaults file: the defaults file is a package conffile, and editing
+it makes package upgrades that change it stop at a conffile prompt.
 .SH CONFIGURATION
 The default configuration file ships with the package and documents all
 available settings:
@@ -29,7 +35,9 @@ Boolean toggle to inhibit reboots.
 Send a reminder e\-mail when a reboot was skipped due to the toggle.
 .TP
 .B upgrade_at_shutdown
-Perform a full package upgrade before rebooting.
+Perform a full package upgrade before rebooting. On APT systems locally
+modified conffiles are kept (\fB--force-confold\fR) so the upgrade never
+waits on a prompt.
 .TP
 .B script_timeout_seconds
 Maximum runtime for each custom script, in seconds.
@@ -72,7 +80,15 @@ Invoked after boot via
 .IR post-reboot.service .
 .TP
 .I /etc/default/scheduled-reboot
-Configuration file read by both scripts.
+Package defaults, read by both scripts. Do not edit; use
+.IR local.conf .
+.TP
+.I /etc/scheduled-reboot/local.conf
+Optional local overrides, read by both scripts after the defaults file. Not
+shipped by the package. Must be root\-owned and not group or other writable.
+.TP
+.I /usr/local/share/scheduled-reboot/default.conf
+Unmodified reference copy of the shipped defaults file.
 .TP
 .I /etc/scheduled-reboot/pre-reboot/
 Optional scripts executed before the reboot.

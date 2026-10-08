@@ -6,8 +6,11 @@ IFS=$' \t\n'
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
 
 readonly CONFIG=/etc/default/scheduled-reboot
+# Local overrides, sourced after CONFIG. Not shipped by the package, so
+# configuration management can own it without modifying the conffile.
+readonly LOCAL_CONFIG=/etc/scheduled-reboot/local.conf
 readonly TAG=scheduled-reboot
-readonly VERSION=0.55
+readonly VERSION=0.56
 readonly NOLOGIN=/etc/nologin
 readonly NOLOGIN_TEXT='System maintenance is in progress. Please try again later.'
 readonly LOCK_DIR=/run/lock/scheduled-reboot.lock
@@ -469,6 +472,11 @@ if [[ -r $CONFIG ]]; then
     source "$CONFIG"
 fi
 
+if [[ -r $LOCAL_CONFIG ]]; then
+    require_secure_path "$LOCAL_CONFIG" 'local config file'
+    source "$LOCAL_CONFIG"
+fi
+
 for variable in \
     scheduled_reboots_disabled \
     email_when_disabled \
@@ -607,7 +615,10 @@ if [[ $upgrade_at_shutdown == true ]]; then
         run_logged "$upgrade_stdout" "$upgrade_stderr" "$package_manager_timeout_seconds" apt-update apt-get -qq update ||
             die "$EXIT_UPGRADE" 'APT update failed; reboot cancelled' "$upgrade_stdout" "$upgrade_stderr"
 
-        run_logged "$upgrade_stdout" "$upgrade_stderr" "$package_manager_timeout_seconds" apt-upgrade apt-get -qq -y upgrade ||
+        # No TTY here, so a conffile prompt would abort dpkg mid-upgrade:
+        # keep locally modified conffiles, take new ones where unmodified.
+        run_logged "$upgrade_stdout" "$upgrade_stderr" "$package_manager_timeout_seconds" apt-upgrade \
+            apt-get -qq -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade ||
             die "$EXIT_UPGRADE" 'APT upgrade failed; reboot cancelled' "$upgrade_stdout" "$upgrade_stderr"
 
     elif command -v dnf >/dev/null 2>&1; then

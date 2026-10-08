@@ -1,6 +1,6 @@
 Name:           scheduled-reboot
-Version:        0.55
-Release:        2%{?dist}
+Version:        0.56
+Release:        1%{?dist}
 Summary:        Script-driven framework for performing automated patching & rebooting systems
 
 License:        MIT
@@ -44,8 +44,13 @@ cp -a etc usr %{buildroot}/
 %attr(0644,root,root) /etc/systemd/system/post-reboot.service
 %config(noreplace) %attr(0644,root,root) /etc/logrotate.d/scheduled-reboot
 %attr(0644,root,root) /usr/local/share/man/man8/scheduled-reboot.8
+%attr(0644,root,root) /usr/local/share/scheduled-reboot/default.conf
 
 %changelog
+* Thu Oct 08 2026 Kodiak Firesmith <firesmith@protonmail.com> - 0.56-1
+- Read local overrides from /etc/scheduled-reboot/local.conf after the defaults file.
+- Ship a reference copy of the defaults file in /usr/local/share/scheduled-reboot/.
+- Keep modified conffiles on APT upgrades instead of aborting at the dpkg prompt.
 * Thu Oct 01 2026 Kodiak Firesmith <firesmith@protonmail.com> - 0.55-2
 - Require /bin/mailx instead of mailx so EL9 (s-nail) can satisfy it.
 * Fri Jul 24 2026 Kodiak Firesmith <firesmith@protonmail.com> - 0.55-1
